@@ -132,7 +132,13 @@ def main(cfg: DictConfig) -> None:
 
     # Initialize loggers
     if dist.rank == 0:
-        writer = SummaryWriter(log_dir="tensorboard")
+        # One TensorBoard run per checkpoint_dir, so resumed jobs append to the same run
+        run_name = os.path.basename(
+            os.path.normpath(str(cfg.training.io.get("checkpoint_dir", ".")))
+        )
+        if run_name in ("", "."):
+            run_name = "default"
+        writer = SummaryWriter(log_dir=os.path.join("tensorboard", run_name))
     logger = PythonLogger("main")  # General python logger
     logger0 = RankZeroLoggingWrapper(logger, dist)  # Rank 0 logger
     initialize_wandb(
