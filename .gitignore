@@ -8,3 +8,7 @@ outputs/
 *.pt
 *.ckpt
 .hydra/
+logs/
+scripts/
+chechpoints_regression/
+tensorboard/
