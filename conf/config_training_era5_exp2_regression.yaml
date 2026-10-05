@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+hydra:
+    job:
+          chdir: false
+          name: era5_exp2_tp_regression
+    run:
+          dir: ./outputs/${hydra:job.name}
+    searchpath:
+          - pkg://conf/base # Do not modify
+
+# Base parameters for dataset, model, training, and validation
+defaults:
+
+    - dataset: custom
+    - model: regression
+    # Train the regression stage first; the diffusion stage needs this
+    # checkpoint as `training.io.regression_checkpoint_path`.
+    - model_size: normal
+    - training: ${model}
+
+# Dataset parameters for ERA5 experiment 2 (precipitation).
+dataset:
+    type: datasets/era5_zarr.py::Era5ZarrDataset
+    data_path: /work/bk1444/climbench/data/experiment2/regular
+    stats_path: /work/k20200/k202223/corrdiff/stats/experiment2_tp.json
+    input_variables: ["tp"]
+    output_variables: ["tp"]
+    invariant_variables: null
+
+# Training parameters
+training:
+    hp:
+        training_duration: 10000000
+        total_batch_size: 256
+        batch_size_per_gpu: "auto"
+        lr: 0.0002
+        lr_rampup: 0
+
+# Additional parameters for validation: same dataset, validation split.
+validation:
+    split: validation
+
+# Parameters for wandb logging
+wandb:
+    mode: offline
+    results_dir: "./wandb"
+    watch_model: false
