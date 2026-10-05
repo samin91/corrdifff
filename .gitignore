@@ -12,3 +12,4 @@ logs/
 scripts/
 chechpoints_regression/
 tensorboard/
+plots/
