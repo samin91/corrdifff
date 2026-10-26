@@ -49,9 +49,9 @@ dataset:
 training:
     hp:
         training_duration: 10000000
-        total_batch_size: 256
+        total_batch_size: 16 # Total batch size across all GPUs. The actual batch size per GPU is determined by `total_batch_size / num_gpus`.
         batch_size_per_gpu: "auto"
-        lr: 0.0002
+        lr: 0.00005 # sqrt-scaled from the 2e-4 default (batch size 256) to batch size 16, as for exp1 and exp2
         lr_rampup: 0
 
 # Additional parameters for validation: same dataset, validation split.
