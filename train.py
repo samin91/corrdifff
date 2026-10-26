@@ -220,6 +220,27 @@ def main(cfg: DictConfig) -> None:
     if cfg.model.hr_mean_conditioning:
         img_in_channels += img_out_channels
 
+    # Optional per-variable loss weights for multi-variable regression models:
+    # `training.hp.loss_weights: {variable name: weight}`. Not set -> the loss is unchanged.
+    loss_weights = None
+    cfg_loss_weights = getattr(cfg.training.hp, "loss_weights", None)
+    if cfg_loss_weights is not None:
+        if cfg.model.name != "regression":
+            raise ValueError("training.hp.loss_weights is only supported for model: regression")
+        out_channel_names = [c.name + c.level for c in dataset.output_channels()]
+        cfg_loss_weights = {str(k): float(v) for k, v in cfg_loss_weights.items()}
+        if set(cfg_loss_weights) != set(out_channel_names):
+            raise ValueError(
+                f"loss_weights must have exactly the output variables {out_channel_names}, "
+                f"got {sorted(cfg_loss_weights)}"
+            )
+        # shape (1, C, 1, 1), in the channel order of the dataset
+        loss_weights = torch.tensor(
+            [cfg_loss_weights[n] for n in out_channel_names],
+            dtype=torch.float32,
+            device=dist.device,
+        ).view(1, -1, 1, 1)
+
     # Handle distribution type
     distribution = getattr(cfg.training.hp, "distribution", None)
     student_t_nu = getattr(cfg.training.hp, "student_t_nu", None)
@@ -622,6 +643,8 @@ def main(cfg: DictConfig) -> None:
                                     ):
                                         loss = loss_fn(**loss_fn_kwargs)
 
+                                if loss_weights is not None:
+                                    loss = loss * loss_weights
                                 loss = loss.sum() / batch_size_per_gpu
                                 loss_accum += (
                                     loss
@@ -699,6 +722,12 @@ def main(cfg: DictConfig) -> None:
                     # Validation
                     if validation_dataset_iterator is not None:
                         valid_loss_accum = 0
+                        # per-variable validation loss without the weights (only with loss_weights)
+                        valid_ch_accum = (
+                            torch.zeros(img_out_channels, device=dist.device)
+                            if loss_weights is not None
+                            else None
+                        )
                         if is_time_for_periodic_task(
                             cur_nimg,
                             cfg.training.io.validation_freq,
@@ -771,11 +800,29 @@ def main(cfg: DictConfig) -> None:
                                         ):
                                             loss_valid = loss_fn(**loss_valid_kwargs)
 
-                                        loss_valid = (
-                                            (loss_valid.sum() / batch_size_per_gpu)
-                                            .cpu()
-                                            .item()
-                                        )
+                                        if loss_weights is not None:
+                                            # (B, C, H, W) -> per-variable loss, then weighted total
+                                            loss_ch = (
+                                                loss_valid.float().sum(dim=(0, 2, 3))
+                                                / batch_size_per_gpu
+                                            )
+                                            valid_ch_accum += (
+                                                loss_ch
+                                                / cfg.training.io.validation_steps
+                                                / len(patch_nums_iter)
+                                            )
+                                            loss_valid = (
+                                                (loss_ch * loss_weights.view(-1))
+                                                .sum()
+                                                .cpu()
+                                                .item()
+                                            )
+                                        else:
+                                            loss_valid = (
+                                                (loss_valid.sum() / batch_size_per_gpu)
+                                                .cpu()
+                                                .item()
+                                            )
                                         valid_loss_accum += (
                                             loss_valid
                                             / cfg.training.io.validation_steps
@@ -795,6 +842,30 @@ def main(cfg: DictConfig) -> None:
                                     writer.add_scalar(
                                         "validation_loss", average_valid_loss, cur_nimg
                                     )
+                                if loss_weights is not None:
+                                    # unweighted validation loss, total and per variable
+                                    # (comparable with runs that used no weights)
+                                    valid_ch_sum = valid_ch_accum.clone()
+                                    if dist.world_size > 1:
+                                        torch.distributed.all_reduce(
+                                            valid_ch_sum,
+                                            op=torch.distributed.ReduceOp.SUM,
+                                        )
+                                    valid_ch_avg = (valid_ch_sum / dist.world_size).tolist()
+                                    if dist.rank == 0:
+                                        writer.add_scalar(
+                                            "validation_loss_unweighted",
+                                            sum(valid_ch_avg),
+                                            cur_nimg,
+                                        )
+                                        for ch_name, ch_val in zip(
+                                            out_channel_names, valid_ch_avg
+                                        ):
+                                            writer.add_scalar(
+                                                f"validation_loss_unweighted/{ch_name}",
+                                                ch_val,
+                                                cur_nimg,
+                                            )
 
                 if is_time_for_periodic_task(
                     cur_nimg,
